@@ -45,10 +45,7 @@ struct ContentView: View {
                 .minimumScaleFactor(0.75)
         } else if nowPlaying.hasTrack {
             HStack(spacing: 8) {
-                Image(systemName: nowPlaying.isPlaying ? "waveform" : "pause.fill")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.8))
-                    .frame(width: 14)
+                artwork
 
                 VStack(alignment: .leading, spacing: 1) {
                     Text(nowPlaying.title)
@@ -67,8 +64,41 @@ struct ContentView: View {
                 }
 
                 Spacer(minLength: 0)
+
+                Image(systemName: nowPlaying.isPlaying ? "waveform" : "pause.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.8))
+                    .frame(width: 14)
             }
         }
+    }
+
+    /// Placeholder sits underneath so the layout does not shift when the
+    /// artwork finishes loading a moment after the track name.
+    private var artwork: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(Color.white.opacity(0.12))
+                .overlay(
+                    Image(systemName: "music.note")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.55))
+                )
+
+            if let albumArt = nowPlaying.albumArt {
+                Image(nsImage: albumArt)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .transition(.opacity)
+            }
+        }
+        .frame(width: 26, height: 26)
+        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.14), lineWidth: 0.5)
+        )
+        .animation(.easeInOut(duration: 0.25), value: nowPlaying.albumArt != nil)
     }
 }
 

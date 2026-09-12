@@ -8,6 +8,8 @@
 import AppKit
 import Combine
 import Foundation
+import ImageIO
+import UniformTypeIdentifiers
 
 /// Polls whichever supported player is running for its current track.
 ///
@@ -101,8 +103,12 @@ final class NowPlayingModel: ObservableObject {
         artworkTask?.cancel()
         albumArt = nil
         artworkTask = Task { [weak self] in
-            let data = await Task.detached(priority: .utility) {
-                NowPlayingQuery.artworkData(for: source)
+            let data = await Task.detached(priority: .utility) { () -> Data? in
+                guard let full = NowPlayingQuery.artworkData(for: source) else { return nil }
+                // Cover art comes back far larger than the pill needs (Music
+                // hands over 1200x1200). Shrink it here, off the main actor, so
+                // we neither decode nor retain the full-size bitmap all day.
+                return NowPlayingQuery.thumbnailData(from: full) ?? full
             }.value
             guard !Task.isCancelled, let self else { return }
             // A newer track may have landed while we were fetching.
@@ -236,6 +242,30 @@ nonisolated enum NowPlayingQuery {
                   output.trimmingCharacters(in: .whitespacesAndNewlines) == "ok" else { return nil }
             return FileManager.default.contents(atPath: path)
         }
+    }
+
+    /// Downsamples encoded image bytes to a pill-sized PNG. ImageIO decodes
+    /// straight to the thumbnail, so the full-size bitmap never materialises.
+    static func thumbnailData(from data: Data, maxPixelSize: Int = 128) -> Data? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+        ]
+        guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            return nil
+        }
+
+        let output = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(
+            output, UTType.png.identifier as CFString, 1, nil
+        ) else { return nil }
+        CGImageDestinationAddImage(destination, thumbnail, nil)
+        guard CGImageDestinationFinalize(destination) else { return nil }
+
+        return output as Data
     }
 
     private static func spotifyArtworkScript() -> String {
