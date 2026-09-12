@@ -9,9 +9,9 @@ import SwiftUI
 
 @main
 struct Dynamic_Island_for_MACApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+
     var body: some Scene {
-        WindowGroup {
-            ContentView()
-        }
+        Settings {}
     }
 }
