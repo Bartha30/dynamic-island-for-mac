@@ -36,3 +36,7 @@ DerivedData/
 
 ## macOS
 .DS_Store
+
+## Release builds (exported app and zips live here, uploaded to GitHub Releases instead)
+Export/
+*.zip
