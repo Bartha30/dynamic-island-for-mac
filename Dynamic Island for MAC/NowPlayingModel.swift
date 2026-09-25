@@ -60,6 +60,12 @@ final class NowPlayingModel: ObservableObject {
 
     private let pollInterval: Duration = .seconds(1)
 
+    /// Bumped around every seek. A poll only trusts the position it read if
+    /// this has not changed since it started — otherwise it may have asked the
+    /// player before the seek landed, and would drag the bar back to the old
+    /// spot for a second.
+    private var seekGeneration = 0
+
     deinit {
         pollTask?.cancel()
         artworkTask?.cancel()
@@ -87,13 +93,14 @@ final class NowPlayingModel: ObservableObject {
     /// One poll cycle. The AppleScript runs off the main actor; only the
     /// resulting snapshot comes back to update published state.
     private func poll() async {
+        let generation = seekGeneration
         let snapshot = await Task.detached(priority: .utility) {
             NowPlayingQuery.currentSnapshot()
         }.value
-        apply(snapshot)
+        apply(snapshot, positionIsFresh: generation == seekGeneration)
     }
 
-    private func apply(_ snapshot: NowPlayingQuery.Snapshot) {
+    private func apply(_ snapshot: NowPlayingQuery.Snapshot, positionIsFresh: Bool = true) {
         permissionDenied = snapshot.permissionDenied
 
         // Neither player running, nothing loaded, or we were denied access:
@@ -118,7 +125,7 @@ final class NowPlayingModel: ObservableObject {
         artist = track.artist
         album = track.album
         isPlaying = track.isPlaying
-        position = max(0, track.position)
+        if positionIsFresh { position = max(0, track.position) }
         duration = max(0, track.duration)
         activeSource = track.source
 
@@ -135,6 +142,26 @@ final class NowPlayingModel: ObservableObject {
     func togglePlayPause() { send(.playPause) }
     func nextTrack() { send(.next) }
     func previousTrack() { send(.previous) }
+
+    /// Jumps the current track to `seconds` from its start.
+    func seek(to seconds: Double) {
+        guard let source = activeSource, duration > 0 else { return }
+        let target = min(duration, max(0, seconds))
+
+        // Show the new spot straight away rather than waiting on the player.
+        position = target
+        seekGeneration += 1
+
+        Task { [weak self] in
+            await Task.detached(priority: .userInitiated) {
+                NowPlayingQuery.seek(to: target, in: source)
+            }.value
+            // Polls that started while the seek was in flight are stale too.
+            self?.seekGeneration += 1
+            try? await Task.sleep(for: .milliseconds(150))
+            await self?.poll()
+        }
+    }
 
     /// Brings the player that owns the current track to the front.
     func activatePlayer() {
@@ -370,6 +397,13 @@ nonisolated enum NowPlayingQuery {
         _ = runScript("tell application \"\(source.rawValue)\" to \(command.rawValue)")
     }
 
+    /// Both players take `player position` in seconds. Sent as whole seconds
+    /// for the same locale reason the track script reads it back that way.
+    static func seek(to seconds: Double, in source: Source) {
+        let whole = max(0, Int(seconds.rounded()))
+        _ = runScript("tell application \"\(source.rawValue)\" to set player position to \(whole)")
+    }
+
     static func activate(_ source: Source) {
         _ = runScript("tell application \"\(source.rawValue)\" to activate")
     }
@@ -548,7 +582,9 @@ nonisolated enum NowPlayingQuery {
 
     /// Downsamples encoded image bytes to a pill-sized PNG. ImageIO decodes
     /// straight to the thumbnail, so the full-size bitmap never materialises.
-    static func thumbnailData(from data: Data, maxPixelSize: Int = 128) -> Data? {
+    /// 512px covers the 92pt expanded cover at 3x with room to spare, so it
+    /// stays pin-sharp on Retina without holding the full-size original.
+    static func thumbnailData(from data: Data, maxPixelSize: Int = 512) -> Data? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
 
         let options: [CFString: Any] = [

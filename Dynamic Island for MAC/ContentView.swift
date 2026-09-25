@@ -5,28 +5,46 @@
 //  Created by Bryan Arthawijaya on 12/09/26.
 //
 
+import Combine
 import SwiftUI
+
+/// The island's outer size in each state. Shared with `AppDelegate`, which
+/// needs it to know where clicks should land on the island and where they
+/// should pass through to whatever is underneath.
+enum IslandMetrics {
+    static let collapsedSize = CGSize(width: 300, height: 36)
+    static let expandedSize = CGSize(width: 450, height: 160)
+}
+
+/// State the app delegate and the view both touch: the delegate collapses the
+/// island on outside clicks and reads its size for click-through.
+final class IslandState: ObservableObject {
+    @Published var isExpanded = false
+}
 
 struct ContentView: View {
     @StateObject private var nowPlaying = NowPlayingModel()
-    @State private var isExpanded = false
+    @ObservedObject var island: IslandState
+    /// Where the user is dragging the progress bar to, in seconds. Non-nil only
+    /// mid-drag; while set, it replaces the polled position on screen so the
+    /// bar follows the finger instead of snapping back every tick.
+    @State private var scrubPosition: Double?
     @Namespace private var pill
 
     private enum Metrics {
-        static let collapsedSize = CGSize(width: 360, height: 35)
-        static let expandedSize = CGSize(width: 510, height: 160)
-        /// Leaves 5.5pt above and below inside the 35pt pill.
+        // Outer sizes live in `IslandMetrics` at the top of this file.
+        /// Leaves 6pt above and below inside the 36pt pill.
         static let collapsedArtwork: CGFloat = 24
-        static let expandedArtwork: CGFloat = 100
+        static let expandedArtwork: CGFloat = 92
 
         /// The notch is 32pt tall on this class of display, so expanded content
         /// starts below it — otherwise the title sits behind the cutout and
         /// reads as cropped.
         static let expandedTopPadding: CGFloat = 36
-        static let expandedBottomPadding: CGFloat = 10
+        static let expandedBottomPadding: CGFloat = 12
         static let expandedSidePadding: CGFloat = 20
         /// Gap between the artwork and the column that fills the rest of the row.
-        static let expandedColumnGap: CGFloat = 18
+        static let expandedColumnGap: CGFloat = 16
     }
 
     var body: some View {
@@ -34,19 +52,22 @@ struct ContentView: View {
             ZStack {
                 // One shape that grows, rather than two that cross-fade, so the
                 // pill reads as the same object changing size.
-                RoundedRectangle(cornerRadius: isExpanded ? 34 : 17, style: .continuous)
+                RoundedRectangle(cornerRadius: island.isExpanded ? 34 : 17, style: .continuous)
                     .fill(Color.black)
+                    .overlay { ambientGlow }
+                    .clipShape(RoundedRectangle(cornerRadius: island.isExpanded ? 34 : 17, style: .continuous))
+                    .animation(.easeInOut(duration: 0.6), value: nowPlaying.accentColor)
                     .onTapGesture { toggleExpanded() }
 
-                if isExpanded {
+                if island.isExpanded {
                     expandedContent.transition(.opacity)
                 } else {
                     collapsedContent.transition(.opacity)
                 }
             }
             .frame(
-                width: isExpanded ? Metrics.expandedSize.width : Metrics.collapsedSize.width,
-                height: isExpanded ? Metrics.expandedSize.height : Metrics.collapsedSize.height
+                width: island.isExpanded ? IslandMetrics.expandedSize.width : IslandMetrics.collapsedSize.width,
+                height: island.isExpanded ? IslandMetrics.expandedSize.height : IslandMetrics.collapsedSize.height
             )
 
             Spacer(minLength: 0)
@@ -60,11 +81,30 @@ struct ContentView: View {
 
     private func toggleExpanded() {
         withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
-            isExpanded.toggle()
+            island.isExpanded.toggle()
         }
+        // Collapsing mid-drag unmounts the bar before the drag can end.
+        scrubPosition = nil
         // The slider is only on screen while expanded, so this is where the
         // system value is worth re-reading.
-        if isExpanded { nowPlaying.refreshSystemVolume() }
+        if island.isExpanded { nowPlaying.refreshSystemVolume() }
+    }
+
+    /// A soft wash of the cover's colour rising from behind the artwork. Kept
+    /// low and to the left so the top edge stays black and still blends into
+    /// the physical notch.
+    @ViewBuilder
+    private var ambientGlow: some View {
+        if island.isExpanded, let accent = nowPlaying.accentColor {
+            RadialGradient(
+                colors: [accent.opacity(0.34), accent.opacity(0.10), .clear],
+                center: UnitPoint(x: 0.12, y: 0.9),
+                startRadius: 0,
+                endRadius: 300
+            )
+            .transition(.opacity)
+            .allowsHitTesting(false)
+        }
     }
 
     // MARK: - Collapsed
@@ -95,29 +135,36 @@ struct ContentView: View {
             .frame(width: 14)
         }
         .padding(.horizontal, 14)
+        // The artwork and indicator sit in front of the black shape and would
+        // otherwise swallow the tap, so the whole row takes it and expands.
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .contentShape(Rectangle())
+        .onTapGesture { toggleExpanded() }
     }
 
     // MARK: - Expanded
 
-    /// Artwork pinned left with everything else filling the rest of the row out
-    /// to the right edge. Text centres itself within that remaining space rather
-    /// than on the panel as a whole, which is what previously left the right
-    /// side empty.
+    /// Artwork on the left; to its right, a left-aligned column of track
+    /// details, progress, then controls with volume tucked on the same row.
     private var expandedContent: some View {
-        HStack(spacing: Metrics.expandedColumnGap) {
-            artwork(size: Metrics.expandedArtwork, cornerRadius: 16)
+        HStack(alignment: .center, spacing: Metrics.expandedColumnGap) {
+            artwork(size: Metrics.expandedArtwork, cornerRadius: 18)
+                // The cover casts light in its own colour onto the panel.
+                .shadow(color: (nowPlaying.accentColor ?? .black).opacity(0.45), radius: 14, y: 4)
                 .onTapGesture { nowPlaying.activatePlayer() }
 
-            VStack(spacing: 4) {
-                trackDetails
+            VStack(alignment: .leading, spacing: 9) {
+                trackHeader
 
-                progressBar
+                progressRow
 
-                transportControls
-
-                volumeSlider
+                HStack(spacing: 12) {
+                    transportControls
+                    Spacer(minLength: 0)
+                    volumeControl
+                }
             }
-            .frame(maxWidth: .infinity)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.horizontal, Metrics.expandedSidePadding)
         .padding(.top, Metrics.expandedTopPadding)
@@ -125,9 +172,9 @@ struct ContentView: View {
     }
 
     @ViewBuilder
-    private var trackDetails: some View {
+    private var trackHeader: some View {
         if nowPlaying.permissionDenied {
-            VStack(spacing: 3) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text("Automation access needed")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(.white)
@@ -136,32 +183,36 @@ struct ContentView: View {
                     .foregroundStyle(.white.opacity(0.6))
                     .fixedSize(horizontal: false, vertical: true)
             }
-            .multilineTextAlignment(.center)
-            .frame(maxWidth: .infinity)
         } else if nowPlaying.hasTrack {
-            // Tapping the track, like tapping the artwork, jumps to the player.
-            VStack(spacing: 2) {
-                Text(nowPlaying.title)
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-
-                if !subtitle.isEmpty {
-                    Text(subtitle)
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(.white.opacity(0.6))
+            HStack(alignment: .top, spacing: 10) {
+                // Tapping the track, like tapping the artwork, jumps to the player.
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(nowPlaying.title)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.white)
                         .lineLimit(1)
+
+                    if !subtitle.isEmpty {
+                        Text(subtitle)
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(.white.opacity(0.6))
+                            .lineLimit(1)
+                    }
+                }
+                .contentShape(Rectangle())
+                .onTapGesture { nowPlaying.activatePlayer() }
+
+                Spacer(minLength: 0)
+
+                if nowPlaying.isPlaying {
+                    EqualizerBars(color: nowPlaying.accentColor ?? .white.opacity(0.85), scale: 1.4)
+                        .padding(.top, 2)
                 }
             }
-            .multilineTextAlignment(.center)
-            .frame(maxWidth: .infinity)
-            .contentShape(Rectangle())
-            .onTapGesture { nowPlaying.activatePlayer() }
         } else {
             Text("Nothing playing")
                 .font(.system(size: 14, weight: .medium))
                 .foregroundStyle(.white.opacity(0.5))
-                .frame(maxWidth: .infinity)
         }
     }
 
@@ -173,44 +224,47 @@ struct ContentView: View {
 
     // MARK: - Progress
 
+    /// Elapsed and remaining time sit either side of the bar on one line,
+    /// rather than on a row of their own underneath.
     @ViewBuilder
-    private var progressBar: some View {
-        // Hidden rather than shown empty when the player reports no duration,
-        // so the row below does not jump as tracks change.
+    private var progressRow: some View {
+        // Hidden rather than shown empty when the player reports no duration.
         if nowPlaying.duration > 0 {
-            VStack(spacing: 6) {
-                GeometryReader { geometry in
-                    ZStack(alignment: .leading) {
-                        Capsule()
-                            .fill(Color.white.opacity(0.18))
+            HStack(spacing: 8) {
+                Text(timeString(displayedPosition))
+                    .frame(minWidth: 30, alignment: .leading)
 
-                        Capsule()
-                            .fill(Color.white.opacity(0.9))
-                            .frame(width: geometry.size.width * progressFraction)
+                ScrubBar(
+                    fraction: progressFraction,
+                    onScrub: { scrubPosition = $0 * nowPlaying.duration },
+                    onCommit: { fraction in
+                        nowPlaying.seek(to: fraction * nowPlaying.duration)
+                        scrubPosition = nil
                     }
-                }
-                .frame(height: 4)
+                )
 
-                HStack {
-                    Text(timeString(nowPlaying.position))
-                    Spacer(minLength: 8)
-                    Text("-" + timeString(max(0, nowPlaying.duration - nowPlaying.position)))
-                }
-                .font(.system(size: 11, weight: .medium))
-                // Monospaced digits stop the labels twitching as numbers change.
-                .monospacedDigit()
-                .foregroundStyle(.white.opacity(0.55))
+                Text("-" + timeString(max(0, nowPlaying.duration - displayedPosition)))
+                    .frame(minWidth: 34, alignment: .trailing)
             }
+            .font(.system(size: 10.5, weight: .medium))
+            // Monospaced digits stop the labels twitching as numbers change.
+            .monospacedDigit()
+            .foregroundStyle(.white.opacity(0.55))
         }
     }
 
-    private var progressFraction: CGFloat {
+    /// The drag position while scrubbing, otherwise what the player reports.
+    private var displayedPosition: Double {
+        scrubPosition ?? nowPlaying.position
+    }
+
+    private var progressFraction: Double {
         guard nowPlaying.duration > 0 else { return 0 }
-        return min(1, max(0, CGFloat(nowPlaying.position / nowPlaying.duration)))
+        return min(1, max(0, displayedPosition / nowPlaying.duration))
     }
 
     private func timeString(_ seconds: Double) -> String {
-        guard seconds.isFinite, seconds > 0 else { return "00:00" }
+        guard seconds.isFinite, seconds > 0 else { return "0:00" }
         let total = Int(seconds.rounded())
         let hours = total / 3600
         let minutes = (total % 3600) / 60
@@ -218,63 +272,71 @@ struct ContentView: View {
 
         return hours > 0
             ? String(format: "%d:%02d:%02d", hours, minutes, secs)
-            : String(format: "%02d:%02d", minutes, secs)
+            : String(format: "%d:%02d", minutes, secs)
     }
 
     // MARK: - Controls
 
+    /// Liquid Glass buttons on macOS 26; plain translucent circles before that.
+    /// Play/pause is larger and tinted with the cover's colour.
     private var transportControls: some View {
-        // Scaled back from the 220pt panel: four stacked rows plus 32pt of notch
-        // clearance leave roughly 114pt, which a 44pt button row overruns.
-        HStack(spacing: 24) {
-            transportButton("backward.fill", size: 13, target: 24, action: nowPlaying.previousTrack)
+        HStack(spacing: 12) {
+            transportButton("backward.fill", symbolSize: 11, diameter: 28, action: nowPlaying.previousTrack)
             transportButton(
                 nowPlaying.isPlaying ? "pause.fill" : "play.fill",
-                size: 18,
-                target: 28,
+                symbolSize: 15,
+                diameter: 34,
+                tint: nowPlaying.accentColor?.opacity(0.5),
                 action: nowPlaying.togglePlayPause
             )
-            transportButton("forward.fill", size: 13, target: 24, action: nowPlaying.nextTrack)
+            transportButton("forward.fill", symbolSize: 11, diameter: 28, action: nowPlaying.nextTrack)
         }
+        .glassContainer(spacing: 8)
         .disabled(nowPlaying.activeSource == nil)
         .opacity(nowPlaying.activeSource == nil ? 0.35 : 1)
     }
 
     private func transportButton(
         _ symbol: String,
-        size: CGFloat,
-        target: CGFloat,
+        symbolSize: CGFloat,
+        diameter: CGFloat,
+        tint: Color? = nil,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: size, weight: .medium))
+                .font(.system(size: symbolSize, weight: .semibold))
                 .foregroundStyle(.white)
-                .frame(width: target, height: target)
-                .contentShape(Rectangle())
+                .frame(width: diameter, height: diameter)
+                .contentShape(Circle())
+                .glassCircle(tint: tint)
         }
         .buttonStyle(.plain)
     }
 
-    private var volumeSlider: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "speaker.fill")
-                .font(.system(size: 11))
-                .foregroundStyle(.white.opacity(0.5))
+    /// Same bar as the progress scrubber, so the two read as one design.
+    private var volumeControl: some View {
+        HStack(spacing: 7) {
+            Image(systemName: volumeSymbol)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.white.opacity(0.55))
+                .frame(width: 16, alignment: .leading)
 
-            Slider(
-                value: Binding(
-                    get: { nowPlaying.systemVolume },
-                    set: { nowPlaying.setSystemVolume($0) }
-                ),
-                in: 0...100
+            ScrubBar(
+                fraction: nowPlaying.systemVolume / 100,
+                onScrub: { nowPlaying.setSystemVolume($0 * 100) },
+                onCommit: { nowPlaying.setSystemVolume($0 * 100) }
             )
-            .controlSize(.small)
-            .tint(.white.opacity(0.85))
+        }
+        .frame(width: 120)
+    }
 
-            Image(systemName: "speaker.wave.3.fill")
-                .font(.system(size: 11))
-                .foregroundStyle(.white.opacity(0.5))
+    private var volumeSymbol: String {
+        switch nowPlaying.systemVolume {
+        case ..<1: return "speaker.slash.fill"
+        case ..<34: return "speaker.wave.1.fill"
+        case ..<67: return "speaker.wave.2.fill"
+        default: return "speaker.wave.3.fill"
         }
     }
 
@@ -295,6 +357,7 @@ struct ContentView: View {
             if let albumArt = nowPlaying.albumArt {
                 Image(nsImage: albumArt)
                     .resizable()
+                    .interpolation(.high)
                     .aspectRatio(contentMode: .fill)
             }
         }
@@ -308,13 +371,106 @@ struct ContentView: View {
     }
 }
 
+// MARK: - Scrub bar
+
+/// A thin draggable bar with a round handle, used for both song position and
+/// volume. Click anywhere to jump; drag to scrub. `onScrub` fires throughout
+/// the drag and `onCommit` once on release, both with a 0...1 fraction.
+private struct ScrubBar: View {
+    var fraction: Double
+    var onScrub: (Double) -> Void
+    var onCommit: (Double) -> Void
+
+    @State private var isDragging = false
+
+    var body: some View {
+        GeometryReader { geometry in
+            let width = geometry.size.width
+            let filled = CGFloat(min(1, max(0, fraction)))
+            let knobSize: CGFloat = isDragging ? 13 : 9
+
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(Color.white.opacity(0.16))
+
+                Capsule()
+                    .fill(Color.white.opacity(0.9))
+                    .frame(width: width * filled)
+
+                Circle()
+                    .fill(Color.white)
+                    .frame(width: knobSize, height: knobSize)
+                    .shadow(color: .black.opacity(0.35), radius: 1.5)
+                    .offset(x: width * filled - knobSize / 2)
+            }
+            // Thickens while held so it is obvious the bar has been grabbed.
+            .frame(height: isDragging ? 6 : 4)
+            .animation(.easeOut(duration: 0.15), value: isDragging)
+            .frame(maxHeight: .infinity)
+            .contentShape(Rectangle())
+            // Zero minimum distance so a plain click jumps as well as a drag.
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        isDragging = true
+                        onScrub(Self.clampedFraction(atX: value.location.x, width: width))
+                    }
+                    .onEnded { value in
+                        isDragging = false
+                        onCommit(Self.clampedFraction(atX: value.location.x, width: width))
+                    }
+            )
+        }
+        // A 4pt bar is too thin to grab, so the touch area is 16pt tall. The
+        // negative padding hands the extra 12pt back to the layout, which has
+        // no room to spare below the notch.
+        .frame(height: 16)
+        .padding(.vertical, -6)
+    }
+
+    private static func clampedFraction(atX x: CGFloat, width: CGFloat) -> Double {
+        guard width > 0 else { return 0 }
+        return Double(min(1, max(0, x / width)))
+    }
+}
+
+// MARK: - Liquid Glass
+
+private extension View {
+    /// Groups glass shapes so they are rendered together and can blend into
+    /// each other when close. No-op before macOS 26.
+    @ViewBuilder
+    func glassContainer(spacing: CGFloat) -> some View {
+        if #available(macOS 26.0, *) {
+            GlassEffectContainer(spacing: spacing) { self }
+        } else {
+            self
+        }
+    }
+
+    /// Liquid Glass circle behind a control on macOS 26, falling back to a
+    /// translucent fill on older systems so the app still runs there.
+    @ViewBuilder
+    func glassCircle(tint: Color?) -> some View {
+        if #available(macOS 26.0, *) {
+            let glass: Glass = tint.map { Glass.regular.tint($0) } ?? .regular
+            self.glassEffect(glass.interactive(), in: Circle())
+        } else {
+            self.background(Circle().fill((tint ?? .white).opacity(0.16)))
+        }
+    }
+}
+
+// MARK: - Equalizer
+
 /// Three bars breathing at slightly different rates — a "something is playing"
-/// cue for the collapsed pill, where there is no room for text.
+/// cue. `scale` enlarges it for the expanded panel.
 ///
 /// Only ever mounted while playback is active, so a plain `onAppear` is enough
 /// to start it and unmounting is what stops it.
 private struct EqualizerBars: View {
     var color: Color
+    var scale: CGFloat = 1
 
     @State private var animating = false
 
@@ -323,23 +479,23 @@ private struct EqualizerBars: View {
     ]
 
     var body: some View {
-        HStack(alignment: .center, spacing: 2) {
+        HStack(alignment: .center, spacing: 2 * scale) {
             ForEach(bars.indices, id: \.self) { index in
                 Capsule()
                     .fill(color)
-                    .frame(width: 2, height: animating ? bars[index].height : 3)
+                    .frame(width: 2 * scale, height: (animating ? bars[index].height : 3) * scale)
                     .animation(
                         .easeInOut(duration: bars[index].duration).repeatForever(autoreverses: true),
                         value: animating
                     )
             }
         }
-        .frame(height: 12)
+        .frame(height: 12 * scale)
         .onAppear { animating = true }
     }
 }
 
 #Preview {
-    ContentView()
+    ContentView(island: IslandState())
         .frame(width: 560, height: 220)
 }
