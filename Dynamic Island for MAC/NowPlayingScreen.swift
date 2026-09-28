@@ -22,6 +22,8 @@ final class NowPlayingScreenController {
     var isShowing: Bool { window != nil }
 
     private let nowPlaying: NowPlayingModel
+    /// Kept for the whole app session, so lyrics are cached between openings.
+    private let lyrics = LyricsModel()
     private var window: NowPlayingWindow?
     /// The app that was in front, so focus goes back there on close.
     private var previousApp: NSRunningApplication?
@@ -54,7 +56,7 @@ final class NowPlayingScreenController {
         window.isReleasedWhenClosed = false
         window.onDismiss = { [weak self] in self?.hide() }
         window.onTogglePlayback = { [weak self] in self?.nowPlaying.togglePlayPause() }
-        window.contentView = NSHostingView(rootView: NowPlayingScreenView(nowPlaying: nowPlaying))
+        window.contentView = NSHostingView(rootView: NowPlayingScreenView(nowPlaying: nowPlaying, lyrics: lyrics))
         window.alphaValue = 0
 
         // The app has no Dock icon, so it has to be activated explicitly to
@@ -126,6 +128,7 @@ private final class NowPlayingWindow: NSWindow {
 
 struct NowPlayingScreenView: View {
     @ObservedObject var nowPlaying: NowPlayingModel
+    @ObservedObject var lyrics: LyricsModel
     /// Drag position on the progress bar, in seconds, while scrubbing.
     @State private var scrubPosition: Double?
 
@@ -147,7 +150,8 @@ struct NowPlayingScreenView: View {
                         playerColumn(artSize: artSize)
                             .frame(width: geometry.size.width / 2)
 
-                        lyricsColumn
+                        LyricsView(lyrics: lyrics, nowPlaying: nowPlaying)
+                            .padding(.leading, 30)
                             .frame(width: geometry.size.width / 2)
                     }
                     .frame(maxHeight: .infinity)
@@ -160,6 +164,15 @@ struct NowPlayingScreenView: View {
             }
         }
         .ignoresSafeArea()
+        // Fetch lyrics whenever the track changes while the screen is open.
+        .task(id: nowPlaying.title + "\u{1F}" + nowPlaying.artist) {
+            await lyrics.load(
+                title: nowPlaying.title,
+                artist: nowPlaying.artist,
+                album: nowPlaying.album,
+                duration: nowPlaying.duration
+            )
+        }
     }
 
     // MARK: Clock
@@ -331,18 +344,6 @@ struct NowPlayingScreenView: View {
         .foregroundStyle(.white.opacity(0.55))
     }
 
-    // MARK: Lyrics (right half)
-
-    /// Placeholder until live lyrics arrive in the next step.
-    private var lyricsColumn: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "quote.bubble")
-                .font(.system(size: 34))
-            Text("Lyrics will appear here")
-                .font(.system(size: 20, weight: .semibold))
-        }
-        .foregroundStyle(.white.opacity(0.45))
-    }
 }
 
 // MARK: - Backdrop

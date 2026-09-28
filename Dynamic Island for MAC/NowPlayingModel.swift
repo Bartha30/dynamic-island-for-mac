@@ -60,6 +60,13 @@ final class NowPlayingModel: ObservableObject {
 
     private let pollInterval: Duration = .seconds(1)
 
+    /// When `position` was last read from the player (or set by a seek).
+    private var positionTimestamp = Date()
+
+    /// The most recent seek, used to ignore readings that come back from the
+    /// player before it has actually moved.
+    private var pendingSeek: (target: Double, at: Date)?
+
     /// Bumped around every seek. A poll only trusts the position it read if
     /// this has not changed since it started — otherwise it may have asked the
     /// player before the seek landed, and would drag the bar back to the old
@@ -94,13 +101,18 @@ final class NowPlayingModel: ObservableObject {
     /// resulting snapshot comes back to update published state.
     private func poll() async {
         let generation = seekGeneration
+        let started = Date()
         let snapshot = await Task.detached(priority: .utility) {
             NowPlayingQuery.currentSnapshot()
         }.value
-        apply(snapshot, positionIsFresh: generation == seekGeneration)
+        // Asking the player takes a noticeable fraction of a second, so the
+        // position it reports was true partway through the wait, not at the
+        // end of it. Stamping it with the midpoint removes most of that lag.
+        let readAt = started.addingTimeInterval(Date().timeIntervalSince(started) / 2)
+        apply(snapshot, positionIsFresh: generation == seekGeneration, readAt: readAt)
     }
 
-    private func apply(_ snapshot: NowPlayingQuery.Snapshot, positionIsFresh: Bool = true) {
+    private func apply(_ snapshot: NowPlayingQuery.Snapshot, positionIsFresh: Bool = true, readAt: Date = Date()) {
         permissionDenied = snapshot.permissionDenied
 
         // Neither player running, nothing loaded, or we were denied access:
@@ -125,7 +137,25 @@ final class NowPlayingModel: ObservableObject {
         artist = track.artist
         album = track.album
         isPlaying = track.isPlaying
-        if positionIsFresh { position = max(0, track.position) }
+        if positionIsFresh {
+            let reported = max(0, track.position)
+            if let seek = pendingSeek {
+                // Where playback should be if the seek has landed.
+                let expected = seek.target + readAt.timeIntervalSince(seek.at)
+                let stillLanding = Date().timeIntervalSince(seek.at) < 1.5
+                if abs(reported - expected) > 1.5, stillLanding {
+                    // A stale reading from before the jump — keep our estimate
+                    // so the bar and lyrics don't flick back and forth.
+                } else {
+                    pendingSeek = nil
+                    position = reported
+                    positionTimestamp = readAt
+                }
+            } else {
+                position = reported
+                positionTimestamp = readAt
+            }
+        }
         duration = max(0, track.duration)
         activeSource = track.source
 
@@ -150,6 +180,8 @@ final class NowPlayingModel: ObservableObject {
 
         // Show the new spot straight away rather than waiting on the player.
         position = target
+        positionTimestamp = Date()
+        pendingSeek = (target, Date())
         seekGeneration += 1
 
         Task { [weak self] in
@@ -161,6 +193,15 @@ final class NowPlayingModel: ObservableObject {
             try? await Task.sleep(for: .milliseconds(150))
             await self?.poll()
         }
+    }
+
+    /// The playback position right now, estimated between polls by adding
+    /// the time since the last reading. Polls only land once a second, which
+    /// is too coarse for lyrics to change line on time.
+    func livePosition(at date: Date = Date()) -> Double {
+        guard isPlaying else { return position }
+        let estimate = position + max(0, date.timeIntervalSince(positionTimestamp))
+        return duration > 0 ? min(duration, estimate) : estimate
     }
 
     /// Brings the player that owns the current track to the front.
@@ -349,7 +390,7 @@ nonisolated enum NowPlayingQuery {
             end try
             set pos to -1
             try
-                set pos to (player position) as integer
+                set pos to ((player position) * 1000) as integer
             end try
             set dur to -1
             try
@@ -379,7 +420,8 @@ nonisolated enum NowPlayingQuery {
             album: fields[3].trimmingCharacters(in: .whitespacesAndNewlines),
             // Music also reports "fast forwarding" / "rewinding"; both are audible.
             isPlaying: fields[0] != "paused",
-            position: Double(fields[4].trimmingCharacters(in: .whitespaces)) ?? -1,
+            // Sent as whole milliseconds, for the locale reason above.
+            position: (Double(fields[4].trimmingCharacters(in: .whitespaces))).map { $0 < 0 ? -1 : $0 / 1000 } ?? -1,
             duration: Double(fields[5].trimmingCharacters(in: .whitespaces)) ?? -1
         )
     }
@@ -397,11 +439,12 @@ nonisolated enum NowPlayingQuery {
         _ = runScript("tell application \"\(source.rawValue)\" to \(command.rawValue)")
     }
 
-    /// Both players take `player position` in seconds. Sent as whole seconds
-    /// for the same locale reason the track script reads it back that way.
+    /// Both players take `player position` in seconds, fractions included.
+    /// `String(format:)` always writes a "." decimal point, which is what
+    /// AppleScript source expects whatever the user's region settings are.
     static func seek(to seconds: Double, in source: Source) {
-        let whole = max(0, Int(seconds.rounded()))
-        _ = runScript("tell application \"\(source.rawValue)\" to set player position to \(whole)")
+        let value = String(format: "%.2f", max(0, seconds))
+        _ = runScript("tell application \"\(source.rawValue)\" to set player position to \(value)")
     }
 
     static func activate(_ source: Source) {
