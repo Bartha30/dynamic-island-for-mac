@@ -309,15 +309,16 @@ struct LyricsView: View {
         .overlay(alignment: .bottom) { offsetBadge }
     }
 
-    /// How far behind the audio the player's reported position runs: the
-    /// same for every song on a given Mac, unlike the lyrics files. This is
-    /// the only fixed adjustment; everything else comes from each song's own
-    /// timestamps (plus its saved correction, if the user made one).
-    private static let playerLatency = 0.25
-
     /// The line whose own timestamp has most recently passed.
+    ///
+    /// `lyricsLatency` (Settings, default 0.25s) is how far behind the audio
+    /// the player's reported position runs: the same for every song on a
+    /// given Mac, unlike the lyrics files. It is the only global adjustment;
+    /// everything else comes from each song's own timestamps, plus its saved
+    /// correction if the user made one. Read on every tick, so moving the
+    /// slider takes effect immediately.
     private func currentIndex(in lines: [LyricLine], at position: Double) -> Int? {
-        let heard = position + Self.playerLatency + lyrics.songOffset
+        let heard = position + AppSettings.shared.lyricsLatency + lyrics.songOffset
         return lines.lastIndex { $0.time <= heard }
     }
 

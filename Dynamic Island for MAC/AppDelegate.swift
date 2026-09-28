@@ -20,6 +20,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let nowPlaying = NowPlayingModel()
     private var nowPlayingScreen: NowPlayingScreenController!
     private var hotKey: GlobalHotKey?
+    private var idleWatcher: IdleWatcher?
+    private let settingsWindow = SettingsWindowController()
     /// Hidden from the menu, as opposed to stepping aside for the full screen.
     private var islandHiddenByUser = false
     private var statusItem: NSStatusItem!
@@ -68,6 +70,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         eventMonitors.forEach(NSEvent.removeMonitor)
+        idleWatcher?.stop()
     }
 
     // MARK: - Click-through
@@ -161,6 +164,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.nowPlayingScreen.show()
         }
 
+        idleWatcher = IdleWatcher(nowPlaying: nowPlaying, screen: nowPlayingScreen)
+        idleWatcher?.start()
+
         // ⌥⌘L from any app. Nil if another app already uses that shortcut.
         hotKey = GlobalHotKey(keyCode: UInt32(kVK_ANSI_L), modifiers: UInt32(cmdKey | optionKey)) { [weak self] in
             self?.nowPlayingScreen.toggle()
@@ -169,6 +175,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func openNowPlayingScreen() {
         nowPlayingScreen.show()
+    }
+
+    @objc private func openSettings() {
+        settingsWindow.show()
     }
 
     // MARK: - Menu bar
@@ -226,6 +236,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(login)
 
         menu.addItem(.separator())
+
+        let settings = NSMenuItem(
+            title: "Settings…",
+            action: #selector(openSettings),
+            keyEquivalent: ","
+        )
+        settings.target = self
+        menu.addItem(settings)
 
         let quit = NSMenuItem(
             title: "Quit Dynamic Island",
