@@ -14,8 +14,19 @@ An iPhone-style Dynamic Island for your MacBook's notch. It shows what's playing
 - Click the artwork or song title to open Spotify / Music
 - Click anywhere outside the island to collapse it
 - Clicks around the island pass straight through to whatever is underneath
-- Menu bar icon and right-click menu: **Show/Hide Island**, **Launch at Login**, **Quit**
+- Menu bar icon and right-click menu: **Now Playing Screen**, **Show/Hide Island**, **Launch at Login**, **Settings…**, **Quit**
 - No Dock icon, stays out of your way
+
+### Now Playing Screen (new in 1.1)
+
+A full-screen view inspired by the iPhone lock screen, for when you're listening rather than working:
+
+- **Player on the left:** large album cover, song and artist, draggable progress bar, playback controls and volume, on a blurred backdrop of the cover
+- **Live lyrics on the right:** the line being sung lights up and the list glides along with the song, Apple Music-style. Click any line to jump to it
+- **Opens automatically** after your Mac has been idle for the time you choose (only while music is playing), or anytime with **⌥⌘L**, the **⤢** button on the expanded island, or the right-click menu
+- **Enter** or **Esc** closes it; **Space** plays or pauses
+- While music plays, the display stays awake. When music stops, your Mac sleeps on its normal schedule again
+- Lyrics a little early or late on a particular song? Press **[** (earlier) or **]** (later) while it plays. The fix is remembered for that song
 
 ## Requirements
 
@@ -50,7 +61,30 @@ If you clicked **Don't Allow**, the island shows a warning. Fix it in **System S
 | Click outside the island | Collapse |
 | Drag or click the progress bar | Jump to that point in the song |
 | Click the artwork or title (expanded) | Open Spotify / Music |
-| Right-click the island, or the menu bar icon | Hide, Launch at Login, Quit |
+| Right-click the island, or the menu bar icon | Now Playing Screen, Hide, Launch at Login, Settings, Quit |
+| **⌥⌘L** (from any app) | Open / close the Now Playing Screen |
+| Click **⤢** on the expanded island | Open the Now Playing Screen |
+| **Enter** / **Esc** on the Now Playing Screen | Close it |
+| **Space** on the Now Playing Screen | Play / pause |
+| Click a lyric line | Jump to that line |
+| **[** / **]** on the Now Playing Screen | Show this song's lyrics earlier / later |
+
+## Settings
+
+Right-click the island › **Settings…** (or ⌘, while its menu is open):
+
+- **Show after idle:** Off, 1, 2, 5, 10, 15, 30, 45 minutes or 1 hour (default 5 minutes). Set it to Off if you only want to open the screen yourself, and the Mac's sleep behaviour is left completely alone
+- **Lyrics timing:** moves the lyrics earlier or later for every song, in case your Mac or speakers run differently (default +0.25 s)
+- **Launch at Login**
+
+## Lyrics
+
+Spotify and Apple Music don't share their lyrics with other apps, so lyrics come from [LRCLIB](https://lrclib.net), a free, community-made lyrics database.
+
+- To look lyrics up, the app sends the **song title, artist, album and length** to lrclib.net. Nothing else is sent, and only while the Now Playing Screen is open
+- Coverage is best for popular English songs. When a song isn't there you'll see "No lyrics found"; when only untimed lyrics exist, they're shown without syncing
+- Lines are synced one at a time (not word by word)
+- Needs an internet connection. In some regions lrclib.net may need a VPN
 
 ## Supported players
 
@@ -71,6 +105,9 @@ Browsers (YouTube, etc.), Podcasts and other apps aren't supported yet. Since ma
 5. Press **Run ▶**.
 
 ## Known limitations
+
+- The Now Playing Screen is a regular window, **not a lock**: pressing Enter closes it without a password, and while music plays the Mac won't lock itself on its idle timer. Lock your Mac yourself (⌃⌘Q) when you step away somewhere public
+- If macOS's own screen saver is set to start sooner than your idle time, it may cover the Now Playing Screen
 
 - Only Spotify and Apple Music (see above).
 - The song info refreshes once a second, so there can be a tiny delay after changes.
