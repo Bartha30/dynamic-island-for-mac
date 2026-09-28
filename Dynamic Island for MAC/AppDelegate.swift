@@ -5,6 +5,7 @@
 //  Created by Bryan Arthawijaya on 12/09/26.
 //
 
+import Carbon.HIToolbox
 import Cocoa
 import Combine
 import ServiceManagement
@@ -14,6 +15,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var panel: NSPanel!
 
     private let island = IslandState()
+    /// One model shared by the island and the full-screen view, so both show
+    /// the same track and only one set of player polling runs.
+    private let nowPlaying = NowPlayingModel()
+    private var nowPlayingScreen: NowPlayingScreenController!
+    private var hotKey: GlobalHotKey?
+    /// Hidden from the menu, as opposed to stepping aside for the full screen.
+    private var islandHiddenByUser = false
     private var statusItem: NSStatusItem!
     private var hostingView: NotchHostingView<ContentView>!
     private var eventMonitors: [Any] = []
@@ -45,13 +53,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         panel.level = .mainMenu + 1
         panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
         panel.acceptsMouseMovedEvents = true
-        hostingView = NotchHostingView(rootView: ContentView(island: island))
+        hostingView = NotchHostingView(rootView: ContentView(nowPlaying: nowPlaying, island: island))
         hostingView.onMouseMoved = { [weak self] in self?.updateMousePassthrough() }
         panel.contentView = hostingView
 
         panel.orderFrontRegardless()
 
+        nowPlaying.start()
         setUpStatusItem()
+        setUpNowPlayingScreen()
         startMouseTracking()
         updateMousePassthrough()
     }
@@ -129,6 +139,38 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    // MARK: - Now Playing screen
+
+    private func setUpNowPlayingScreen() {
+        nowPlayingScreen = NowPlayingScreenController(nowPlaying: nowPlaying)
+
+        // The island steps aside while the full screen is up, and comes back
+        // afterwards — unless the user had hidden it themselves.
+        nowPlayingScreen.onShow = { [weak self] in
+            guard let self else { return }
+            self.island.isExpanded = false
+            self.panel.orderOut(nil)
+        }
+        nowPlayingScreen.onHide = { [weak self] in
+            guard let self, !self.islandHiddenByUser else { return }
+            self.panel.orderFrontRegardless()
+            self.updateMousePassthrough()
+        }
+
+        island.openNowPlayingScreen = { [weak self] in
+            self?.nowPlayingScreen.show()
+        }
+
+        // ⌥⌘L from any app. Nil if another app already uses that shortcut.
+        hotKey = GlobalHotKey(keyCode: UInt32(kVK_ANSI_L), modifiers: UInt32(cmdKey | optionKey)) { [weak self] in
+            self?.nowPlayingScreen.toggle()
+        }
+    }
+
+    @objc private func openNowPlayingScreen() {
+        nowPlayingScreen.show()
+    }
+
     // MARK: - Menu bar
 
     /// The app has no Dock icon or menu of its own, so this icon is the only
@@ -154,8 +196,20 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
 
+        let screen = NSMenuItem(
+            title: "Now Playing Screen",
+            action: #selector(openNowPlayingScreen),
+            keyEquivalent: "l"
+        )
+        // Shown in the menu as ⌥⌘L to advertise the shortcut.
+        screen.keyEquivalentModifierMask = [.command, .option]
+        screen.target = self
+        menu.addItem(screen)
+
+        menu.addItem(.separator())
+
         let visibility = NSMenuItem(
-            title: panel.isVisible ? "Hide Island" : "Show Island",
+            title: islandHiddenByUser ? "Show Island" : "Hide Island",
             action: #selector(toggleIslandVisibility),
             keyEquivalent: ""
         )
@@ -183,10 +237,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func toggleIslandVisibility() {
-        if panel.isVisible {
+        islandHiddenByUser.toggle()
+        if islandHiddenByUser {
             island.isExpanded = false
             panel.orderOut(nil)
-        } else {
+        } else if !nowPlayingScreen.isShowing {
             panel.orderFrontRegardless()
             updateMousePassthrough()
         }

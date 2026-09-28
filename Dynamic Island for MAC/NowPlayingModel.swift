@@ -582,9 +582,9 @@ nonisolated enum NowPlayingQuery {
 
     /// Downsamples encoded image bytes to a pill-sized PNG. ImageIO decodes
     /// straight to the thumbnail, so the full-size bitmap never materialises.
-    /// 512px covers the 92pt expanded cover at 3x with room to spare, so it
-    /// stays pin-sharp on Retina without holding the full-size original.
-    static func thumbnailData(from data: Data, maxPixelSize: Int = 512) -> Data? {
+    /// 1200px keeps the large cover on the full-screen view sharp on Retina
+    /// (about 440pt, so ~900px at 2x), while never holding anything bigger.
+    static func thumbnailData(from data: Data, maxPixelSize: Int = 1200) -> Data? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
 
         let options: [CFString: Any] = [

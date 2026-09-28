@@ -20,10 +20,13 @@ enum IslandMetrics {
 /// island on outside clicks and reads its size for click-through.
 final class IslandState: ObservableObject {
     @Published var isExpanded = false
+    /// Set by the app delegate; the island's full-screen button calls it.
+    var openNowPlayingScreen: () -> Void = {}
 }
 
 struct ContentView: View {
-    @StateObject private var nowPlaying = NowPlayingModel()
+    /// Owned by the app delegate, which shares it with the full-screen view.
+    @ObservedObject var nowPlaying: NowPlayingModel
     @ObservedObject var island: IslandState
     /// Where the user is dragging the progress bar to, in seconds. Non-nil only
     /// mid-drag; while set, it replaces the polled position on screen so the
@@ -64,6 +67,15 @@ struct ContentView: View {
                 } else {
                     collapsedContent.transition(.opacity)
                 }
+
+                // Top-right corner, clear of the notch in the middle.
+                if island.isExpanded {
+                    fullScreenButton
+                        .padding(.top, 12)
+                        .padding(.trailing, 22)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                        .transition(.opacity)
+                }
             }
             .frame(
                 width: island.isExpanded ? IslandMetrics.expandedSize.width : IslandMetrics.collapsedSize.width,
@@ -88,6 +100,22 @@ struct ContentView: View {
         // The slider is only on screen while expanded, so this is where the
         // system value is worth re-reading.
         if island.isExpanded { nowPlaying.refreshSystemVolume() }
+    }
+
+    /// Opens the full-screen Now Playing view.
+    private var fullScreenButton: some View {
+        Button {
+            island.openNowPlayingScreen()
+        } label: {
+            Image(systemName: "arrow.up.left.and.arrow.down.right")
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(.white.opacity(0.75))
+                .frame(width: 22, height: 22)
+                .contentShape(Circle())
+                .glassCircle(tint: nil)
+        }
+        .buttonStyle(.plain)
+        .help("Now Playing Screen (⌥⌘L)")
     }
 
     /// A soft wash of the cover's colour rising from behind the artwork. Kept
@@ -376,7 +404,7 @@ struct ContentView: View {
 /// A thin draggable bar with a round handle, used for both song position and
 /// volume. Click anywhere to jump; drag to scrub. `onScrub` fires throughout
 /// the drag and `onCommit` once on release, both with a 0...1 fraction.
-private struct ScrubBar: View {
+struct ScrubBar: View {
     var fraction: Double
     var onScrub: (Double) -> Void
     var onCommit: (Double) -> Void
@@ -436,7 +464,7 @@ private struct ScrubBar: View {
 
 // MARK: - Liquid Glass
 
-private extension View {
+extension View {
     /// Groups glass shapes so they are rendered together and can blend into
     /// each other when close. No-op before macOS 26.
     @ViewBuilder
@@ -496,6 +524,6 @@ private struct EqualizerBars: View {
 }
 
 #Preview {
-    ContentView(island: IslandState())
+    ContentView(nowPlaying: NowPlayingModel(), island: IslandState())
         .frame(width: 560, height: 220)
 }
