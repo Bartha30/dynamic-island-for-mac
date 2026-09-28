@@ -36,6 +36,16 @@ final class LyricsModel: ObservableObject {
 
     @Published private(set) var state: State = .idle
 
+    /// A timing correction for the current song only, in seconds. Positive
+    /// shows lines earlier. Lyrics files are timed by hand by different
+    /// people, so an occasional song runs a little early or late; the user
+    /// fixes it once with [ and ] and it is remembered for that song.
+    @Published private(set) var songOffset: Double = 0
+    /// When `songOffset` last changed, to briefly show its value on screen.
+    @Published private(set) var songOffsetChangedAt: Date?
+
+    private static let offsetsKey = "LyricsSongOffsets"
+
     private var cache: [String: State] = [:]
     private var currentKey: String?
     private var lastRequest: (title: String, artist: String, album: String, duration: Double)?
@@ -43,6 +53,7 @@ final class LyricsModel: ObservableObject {
     func load(title: String, artist: String, album: String, duration: Double) async {
         guard !title.isEmpty else {
             currentKey = nil
+            songOffset = 0
             state = .idle
             return
         }
@@ -50,6 +61,7 @@ final class LyricsModel: ObservableObject {
         let key = "\(artist)\u{1F}\(title)".lowercased()
         currentKey = key
         lastRequest = (title, artist, album, duration)
+        songOffset = Self.savedOffsets()[key] ?? 0
 
         if let cached = cache[key] {
             state = cached
@@ -74,6 +86,23 @@ final class LyricsModel: ObservableObject {
         // Network failures are not remembered, so the next attempt retries.
         if result != .failed { cache[key] = result }
         state = result
+    }
+
+    /// Shifts the current song's lyrics by `delta` seconds (positive: earlier)
+    /// and saves it for next time.
+    func nudge(by delta: Double) {
+        guard let key = currentKey else { return }
+        let value = ((songOffset + delta) * 10).rounded() / 10
+        songOffset = min(5, max(-5, value))
+
+        var offsets = Self.savedOffsets()
+        offsets[key] = songOffset == 0 ? nil : songOffset
+        UserDefaults.standard.set(offsets, forKey: Self.offsetsKey)
+        songOffsetChangedAt = Date()
+    }
+
+    private static func savedOffsets() -> [String: Double] {
+        UserDefaults.standard.dictionary(forKey: offsetsKey) as? [String: Double] ?? [:]
     }
 
     func retry() {
@@ -122,6 +151,15 @@ nonisolated enum LyricsClient {
         let best = candidates
             .filter { interpret($0) != nil }
             .min { rank($0, duration: duration) < rank($1, duration: duration) }
+
+        // Timestamps made for a different cut of the song (radio edit, video
+        // version with a longer intro…) would drift further out of sync as it
+        // plays, so show those words without timing instead.
+        if let best, duration > 0, let recordDuration = best.duration,
+           abs(recordDuration - duration) > 5,
+           case .synced(let lines)? = interpret(best) {
+            return .plain(lines.map(\.text))
+        }
         return best.flatMap(interpret) ?? .notFound
     }
 
@@ -232,8 +270,9 @@ struct LyricsView: View {
                     SyncedLyricsList(
                         lines: lines,
                         current: currentIndex(in: lines, at: nowPlaying.livePosition(at: context.date)),
-                        // A hair before the line, so its first word isn't clipped.
-                        onSelect: { nowPlaying.seek(to: max(0, $0.time - 0.1)) }
+                        // Where the line really starts in this song, less a
+                        // hair so its first word isn't clipped.
+                        onSelect: { nowPlaying.seek(to: max(0, $0.time - lyrics.songOffset - 0.1)) }
                     )
                 }
 
@@ -267,16 +306,46 @@ struct LyricsView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .overlay(alignment: .bottom) { offsetBadge }
     }
 
-    /// How early a line lights up. The highlight animation takes a moment
-    /// to read as "on", so starting it slightly early makes it land with the
-    /// voice rather than a beat behind it.
-    private static let leadTime = 0.65
+    /// How far behind the audio the player's reported position runs: the
+    /// same for every song on a given Mac, unlike the lyrics files. This is
+    /// the only fixed adjustment; everything else comes from each song's own
+    /// timestamps (plus its saved correction, if the user made one).
+    private static let playerLatency = 0.25
 
-    /// The last line whose start time has passed, allowing for `leadTime`.
+    /// The line whose own timestamp has most recently passed.
     private func currentIndex(in lines: [LyricLine], at position: Double) -> Int? {
-        lines.lastIndex { $0.time <= position + Self.leadTime }
+        let heard = position + Self.playerLatency + lyrics.songOffset
+        return lines.lastIndex { $0.time <= heard }
+    }
+
+    /// Shown for a moment after [ or ], so the user can see what changed.
+    private var offsetBadge: some View {
+        TimelineView(.periodic(from: .now, by: 0.25)) { context in
+            let visible = lyrics.songOffsetChangedAt.map { context.date.timeIntervalSince($0) < 1.8 } ?? false
+            Group {
+                if visible {
+                    Text(offsetDescription)
+                        .font(.system(size: 13, weight: .semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 7)
+                        .glassPanel(cornerRadius: 14)
+                        .transition(.opacity)
+                }
+            }
+            .animation(.easeOut(duration: 0.25), value: visible)
+        }
+        .padding(.bottom, 12)
+    }
+
+    private var offsetDescription: String {
+        let offset = lyrics.songOffset
+        if offset == 0 { return "Lyrics timing: original" }
+        return String(format: "Lyrics %.1fs %@ for this song", abs(offset), offset > 0 ? "earlier" : "later")
     }
 
     private func message(icon: String?, title: String, detail: String? = nil) -> some View {
@@ -306,6 +375,16 @@ private struct SyncedLyricsList: View {
 
     /// The line under the pointer, lit up to show it can be clicked.
     @State private var hoveredLine: Int?
+
+    /// Seconds since the previous line began: the song's pace right now.
+    /// Fast lines get quicker animations so the list settles between them
+    /// instead of never catching up; slow songs keep the full, soft timing.
+    private var pace: Double {
+        guard let current, current > 0 else { return 4 }
+        return max(0, lines[current].time - lines[current - 1].time)
+    }
+
+    private var glideDuration: Double { min(0.9, max(0.45, pace * 0.55)) }
 
     var body: some View {
         GeometryReader { geometry in
@@ -350,9 +429,14 @@ private struct SyncedLyricsList: View {
             .font(.system(size: 30, weight: .bold))
             .foregroundStyle(.white.opacity(isCurrent ? 1 : (isHovered ? 0.7 : 0.32)))
             .blur(radius: isCurrent || isHovered ? 0 : min(2.5, Double(distance) * 0.6))
-            .scaleEffect(isCurrent ? 1 : 0.96, anchor: .leading)
-            // A soft crossfade between lines rather than a hard switch.
-            .animation(.easeInOut(duration: 0.45), value: isCurrent)
+            .scaleEffect(isCurrent ? 1 : 0.98, anchor: .leading)
+            // The new line brightens on a fast-starting curve, so it reads as
+            // "on" right as the voice starts but without a hard pop; the old
+            // line fades out slowly.
+            .animation(isCurrent ? Animation.easeOut(duration: 0.35) : Animation.easeInOut(duration: 0.6), value: isCurrent)
+            // Every other line re-blurs and re-dims as the current line moves
+            // away from it; animating that stops the whole list jumping at once.
+            .animation(.easeInOut(duration: 0.6), value: distance)
             .animation(.easeOut(duration: 0.15), value: isHovered)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
@@ -370,8 +454,9 @@ private struct SyncedLyricsList: View {
         let target = current ?? 0
         let anchor = UnitPoint(x: 0, y: 0.35)
         if animated {
-            // A slow, even glide with no bounce at the end.
-            withAnimation(.easeInOut(duration: 0.8)) {
+            // Eases in and out gently, paced by the gap between this song's
+            // lines, with no bounce at the end.
+            withAnimation(.timingCurve(0.3, 0.0, 0.2, 1.0, duration: glideDuration)) {
                 proxy.scrollTo(target, anchor: anchor)
             }
         } else {

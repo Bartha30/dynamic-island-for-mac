@@ -56,6 +56,7 @@ final class NowPlayingScreenController {
         window.isReleasedWhenClosed = false
         window.onDismiss = { [weak self] in self?.hide() }
         window.onTogglePlayback = { [weak self] in self?.nowPlaying.togglePlayPause() }
+        window.onNudgeLyrics = { [weak self] delta in self?.lyrics.nudge(by: delta) }
         window.contentView = NSHostingView(rootView: NowPlayingScreenView(nowPlaying: nowPlaying, lyrics: lyrics))
         window.alphaValue = 0
 
@@ -103,6 +104,8 @@ final class NowPlayingScreenController {
 private final class NowPlayingWindow: NSWindow {
     var onDismiss: () -> Void = {}
     var onTogglePlayback: () -> Void = {}
+    /// Positive: show this song's lyrics earlier.
+    var onNudgeLyrics: (Double) -> Void = { _ in }
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
@@ -113,6 +116,10 @@ private final class NowPlayingWindow: NSWindow {
             onDismiss()
         case kVK_Space:
             onTogglePlayback()
+        case kVK_ANSI_LeftBracket:
+            onNudgeLyrics(0.1)
+        case kVK_ANSI_RightBracket:
+            onNudgeLyrics(-0.1)
         default:
             super.keyDown(with: event)
         }
@@ -156,7 +163,7 @@ struct NowPlayingScreenView: View {
                     }
                     .frame(maxHeight: .infinity)
 
-                    Text("Press Enter to close")
+                    Text("Enter to close  ·  [ and ] to adjust lyrics timing")
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(.white.opacity(0.35))
                         .padding(.bottom, 22)
