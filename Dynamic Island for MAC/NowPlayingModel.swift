@@ -164,7 +164,7 @@ final class NowPlayingModel: ObservableObject {
         let key = "\(track.source.rawValue)\u{1F}\(track.title)\u{1F}\(track.artist)"
         guard key != artworkKey else { return }
         artworkKey = key
-        loadArtwork(for: track.source, key: key)
+        loadArtwork(for: track.source, key: key, title: track.title, artist: track.artist)
     }
 
     // MARK: - Transport
@@ -260,7 +260,7 @@ final class NowPlayingModel: ObservableObject {
 
     // MARK: - Artwork
 
-    private func loadArtwork(for source: NowPlayingQuery.Source, key: String) {
+    private func loadArtwork(for source: NowPlayingQuery.Source, key: String, title: String, artist: String) {
         artworkTask?.cancel()
         albumArt = nil
         accentColor = nil
@@ -268,21 +268,34 @@ final class NowPlayingModel: ObservableObject {
         // once per poll -- the accent colour is derived here and then cached in
         // `accentColor` until the track changes.
         artworkTask = Task { [weak self] in
-            let payload = await Task.detached(priority: .utility) {
-                () -> (data: Data?, accent: NowPlayingQuery.AccentColor?) in
-                guard let full = NowPlayingQuery.artworkData(for: source) else { return (nil, nil) }
-                // Cover art comes back far larger than the pill needs (Music
-                // hands over 1200x1200). Shrink it here, off the main actor, so
-                // we neither decode nor retain the full-size bitmap all day.
-                let thumbnail = NowPlayingQuery.thumbnailData(from: full) ?? full
-                return (thumbnail, NowPlayingQuery.dominantColor(from: thumbnail))
-            }.value
-            guard !Task.isCancelled, let self else { return }
-            // A newer track may have landed while we were fetching.
-            guard self.artworkKey == key else { return }
-            self.albumArt = payload.data.flatMap(NSImage.init(data:))
-            self.accentColor = payload.accent.map {
-                Color(red: $0.red, green: $0.green, blue: $0.blue)
+            // Right at a track change the player often has no cover ready yet,
+            // and downloads can fail on a slow connection or a VPN switch, so a
+            // miss is retried a few times while the same track keeps playing.
+            for delay in [0.0, 1.5, 4, 10] {
+                if delay > 0 { try? await Task.sleep(for: .seconds(delay)) }
+                guard !Task.isCancelled else { return }
+
+                let payload = await Task.detached(priority: .utility) {
+                    () async -> (data: Data?, accent: NowPlayingQuery.AccentColor?) in
+                    guard let full = await NowPlayingQuery.artworkData(for: source, title: title, artist: artist) else {
+                        return (nil, nil)
+                    }
+                    // Cover art comes back far larger than needed. Shrink it
+                    // here, off the main actor, so we neither decode nor retain
+                    // the full-size bitmap all day.
+                    let thumbnail = NowPlayingQuery.thumbnailData(from: full) ?? full
+                    return (thumbnail, NowPlayingQuery.dominantColor(from: thumbnail))
+                }.value
+
+                // A newer track may have landed while we were fetching.
+                guard !Task.isCancelled, let self, self.artworkKey == key else { return }
+                if let data = payload.data, let image = NSImage(data: data) {
+                    self.albumArt = image
+                    self.accentColor = payload.accent.map {
+                        Color(red: $0.red, green: $0.green, blue: $0.blue)
+                    }
+                    return
+                }
             }
         }
     }
@@ -473,24 +486,105 @@ nonisolated enum NowPlayingQuery {
 
     /// Returns encoded image bytes rather than an `NSImage`, since `NSImage`
     /// only became `Sendable` in macOS 14 and this crosses an actor boundary.
-    static func artworkData(for source: Source) -> Data? {
+    /// The cover from the player itself, or failing that from Apple's public
+    /// iTunes catalogue — which covers Apple Music songs streamed without
+    /// being added to the library, where Music won't hand the cover over.
+    static func artworkData(for source: Source, title: String, artist: String) async -> Data? {
+        if let data = await playerArtwork(for: source) { return data }
+        return await catalogArtwork(title: title, artist: artist)
+    }
+
+    private static func playerArtwork(for source: Source) async -> Data? {
         switch source {
         case .spotify:
             // Spotify hands back a URL rather than image data.
             guard case .success(let output) = runScript(spotifyArtworkScript()) else { return nil }
             let urlString = output.trimmingCharacters(in: .whitespacesAndNewlines)
             guard let url = URL(string: urlString), url.scheme?.hasPrefix("http") == true else { return nil }
-            return try? Data(contentsOf: url)
+            return await download(url)
 
         case .music:
             // Music vends raw bytes, which survive the trip out of osascript far
-            // better through a temp file than as text.
-            let path = NSTemporaryDirectory().appending("dynamic-island-artwork")
+            // better through a temp file than as text. A fresh name each time,
+            // so two quick track changes can't overwrite each other's cover.
+            let path = NSTemporaryDirectory().appending("dynamic-island-artwork-\(UUID().uuidString)")
             defer { try? FileManager.default.removeItem(atPath: path) }
             guard case .success(let output) = runScript(musicArtworkScript(path: path)),
                   output.trimmingCharacters(in: .whitespacesAndNewlines) == "ok" else { return nil }
             return FileManager.default.contents(atPath: path)
         }
+    }
+
+    /// A download that gives up after 8 seconds instead of hanging, so the
+    /// retry loop gets its next chance.
+    private static func download(_ url: URL) async -> Data? {
+        let request = URLRequest(url: url, timeoutInterval: 8)
+        guard let result = try? await URLSession.shared.data(for: request) else { return nil }
+        let (data, response) = result
+        guard (response as? HTTPURLResponse)?.statusCode == 200, !data.isEmpty else { return nil }
+        return data
+    }
+
+    // MARK: Catalogue fallback
+
+    nonisolated private struct CatalogResponse: Decodable {
+        let results: [Item]
+
+        nonisolated struct Item: Decodable {
+            let trackName: String?
+            let artistName: String?
+            let artworkUrl100: String?
+        }
+    }
+
+    /// Looks the song up in the iTunes catalogue. Only used when both the
+    /// artist and the title match, so a wrong cover is never shown.
+    private static func catalogArtwork(title: String, artist: String) async -> Data? {
+        let wantedTitle = normalized(title)
+        let wantedArtist = normalized(artist)
+        guard !wantedTitle.isEmpty, !wantedArtist.isEmpty else { return nil }
+
+        var components = URLComponents(string: "https://itunes.apple.com/search")!
+        components.queryItems = [
+            URLQueryItem(name: "term", value: "\(artist) \(title)"),
+            URLQueryItem(name: "entity", value: "song"),
+            URLQueryItem(name: "limit", value: "10"),
+        ]
+        guard let url = components.url,
+              let data = await download(url),
+              let response = try? JSONDecoder().decode(CatalogResponse.self, from: data)
+        else { return nil }
+
+        let match = response.results.first { item in
+            let itemTitle = normalized(item.trackName ?? "")
+            let itemArtist = normalized(item.artistName ?? "")
+            return !itemTitle.isEmpty && !itemArtist.isEmpty
+                && (itemTitle.contains(wantedTitle) || wantedTitle.contains(itemTitle))
+                && (itemArtist.contains(wantedArtist) || wantedArtist.contains(itemArtist))
+        }
+
+        // The catalogue lists a 100px thumbnail; the same address serves any
+        // size, so ask for a sharp one.
+        guard let small = match?.artworkUrl100,
+              let large = URL(string: small.replacingOccurrences(of: "100x100bb", with: "1000x1000bb"))
+        else { return nil }
+        return await download(large)
+    }
+
+    /// Lowercased, without "(feat. …)", "[Remastered]" or " - Radio Edit", so
+    /// the same song matches however each service spells it.
+    private static func normalized(_ text: String) -> String {
+        var result = text.lowercased()
+        for (open, close) in [("(", ")"), ("[", "]")] {
+            while let start = result.range(of: open),
+                  let end = result.range(of: close, range: start.upperBound..<result.endIndex) {
+                result.removeSubrange(start.lowerBound..<end.upperBound)
+            }
+        }
+        if let dash = result.range(of: " - ") {
+            result = String(result[..<dash.lowerBound])
+        }
+        return result.trimmingCharacters(in: .whitespaces)
     }
 
     struct AccentColor {
