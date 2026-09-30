@@ -21,6 +21,12 @@ final class AppSettings: ObservableObject {
     /// by ear on a MacBook Air with Spotify.
     static let defaultLyricsLatency = 0.25
 
+    /// Expand the island when the pointer rests on it, and collapse it when
+    /// the pointer leaves. Clicking works either way.
+    @Published var expandOnHover: Bool {
+        didSet { UserDefaults.standard.set(expandOnHover, forKey: Keys.expandOnHover) }
+    }
+
     @Published var idleMinutes: Int {
         didSet { UserDefaults.standard.set(idleMinutes, forKey: Keys.idleMinutes) }
     }
@@ -32,12 +38,14 @@ final class AppSettings: ObservableObject {
     }
 
     private enum Keys {
+        static let expandOnHover = "ExpandOnHover"
         static let idleMinutes = "IdleMinutes"
         static let lyricsLatency = "LyricsLatency"
     }
 
     private init() {
         let defaults = UserDefaults.standard
+        expandOnHover = defaults.object(forKey: Keys.expandOnHover) as? Bool ?? true
         idleMinutes = defaults.object(forKey: Keys.idleMinutes) as? Int ?? 5
         lyricsLatency = defaults.object(forKey: Keys.lyricsLatency) as? Double ?? Self.defaultLyricsLatency
     }
@@ -104,6 +112,17 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
+            Section {
+                Toggle("Expand on hover", isOn: $settings.expandOnHover)
+
+                Text("Opens the island when you rest the pointer on it, and closes it when you move away. You can always click it instead.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } header: {
+                Text("Island")
+            }
+
             Section {
                 Picker("Show after idle", selection: $settings.idleMinutes) {
                     ForEach(AppSettings.idleOptions, id: \.self) { minutes in

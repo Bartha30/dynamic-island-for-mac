@@ -385,7 +385,7 @@ private struct SyncedLyricsList: View {
         return max(0, lines[current].time - lines[current - 1].time)
     }
 
-    private var glideDuration: Double { min(0.9, max(0.45, pace * 0.55)) }
+    private var glideDuration: Double { min(1.0, max(0.5, pace * 0.6)) }
 
     var body: some View {
         GeometryReader { geometry in
@@ -430,14 +430,14 @@ private struct SyncedLyricsList: View {
             .font(.system(size: 30, weight: .bold))
             .foregroundStyle(.white.opacity(isCurrent ? 1 : (isHovered ? 0.7 : 0.32)))
             .blur(radius: isCurrent || isHovered ? 0 : min(2.5, Double(distance) * 0.6))
-            .scaleEffect(isCurrent ? 1 : 0.98, anchor: .leading)
+            .scaleEffect(isCurrent ? 1 : 0.985, anchor: .leading)
             // The new line brightens on a fast-starting curve, so it reads as
             // "on" right as the voice starts but without a hard pop; the old
             // line fades out slowly.
-            .animation(isCurrent ? Animation.easeOut(duration: 0.35) : Animation.easeInOut(duration: 0.6), value: isCurrent)
+            .animation(isCurrent ? Animation.easeOut(duration: 0.45) : Animation.easeInOut(duration: 0.8), value: isCurrent)
             // Every other line re-blurs and re-dims as the current line moves
             // away from it; animating that stops the whole list jumping at once.
-            .animation(.easeInOut(duration: 0.6), value: distance)
+            .animation(.easeInOut(duration: 0.8), value: distance)
             .animation(.easeOut(duration: 0.15), value: isHovered)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
@@ -455,9 +455,11 @@ private struct SyncedLyricsList: View {
         let target = current ?? 0
         let anchor = UnitPoint(x: 0, y: 0.35)
         if animated {
-            // Eases in and out gently, paced by the gap between this song's
-            // lines, with no bounce at the end.
-            withAnimation(.timingCurve(0.3, 0.0, 0.2, 1.0, duration: glideDuration)) {
+            // A spring with no bounce, paced by the gap between this song's
+            // lines. Unlike a fixed curve, a spring keeps its momentum when the
+            // next line arrives mid-glide and simply bends towards it, so fast
+            // songs flow instead of stopping and restarting.
+            withAnimation(.spring(response: glideDuration, dampingFraction: 1.0)) {
                 proxy.scrollTo(target, anchor: anchor)
             }
         } else {

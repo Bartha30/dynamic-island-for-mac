@@ -29,6 +29,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var eventMonitors: [Any] = []
     private var cancellables = Set<AnyCancellable>()
 
+    /// A pending hover expand or collapse, cancelled if the pointer changes
+    /// its mind before it fires.
+    private var hoverTask: Task<Void, Never>?
+    /// Whether the pointer was over the island at the last check, so hover
+    /// only reacts to it arriving or leaving, not to every small movement.
+    private var pointerWasOverIsland = false
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard let screen = NSScreen.main else { return }
 
@@ -120,6 +127,43 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if panel.ignoresMouseEvents == overIsland {
             panel.ignoresMouseEvents = !overIsland
         }
+        updateHover(overIsland: overIsland)
+    }
+
+    // MARK: - Hover to expand
+
+    private func updateHover(overIsland: Bool) {
+        defer { pointerWasOverIsland = overIsland }
+        guard AppSettings.shared.expandOnHover, overIsland != pointerWasOverIsland else { return }
+        hoverTask?.cancel()
+
+        if overIsland, !island.isExpanded {
+            // A short dwell, so sweeping past on the way to a menu bar item
+            // doesn't pop the island open.
+            hoverTask = Task { [weak self] in
+                try? await Task.sleep(for: .milliseconds(200))
+                guard !Task.isCancelled, let self else { return }
+                self.setExpanded(true)
+            }
+        } else if !overIsland, island.isExpanded {
+            // A slightly longer grace period, so slipping just past the edge
+            // while reaching for a control doesn't close it.
+            hoverTask = Task { [weak self] in
+                try? await Task.sleep(for: .milliseconds(400))
+                guard !Task.isCancelled, let self else { return }
+                guard !self.islandFrameOnScreen().contains(NSEvent.mouseLocation) else { return }
+                self.setExpanded(false)
+            }
+        }
+    }
+
+    private func setExpanded(_ expanded: Bool) {
+        guard island.isExpanded != expanded else { return }
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+            island.isExpanded = expanded
+        }
+        // The volume slider only shows while expanded, so re-read it now.
+        if expanded { nowPlaying.refreshSystemVolume() }
     }
 
     /// Where the island currently sits on screen: centred horizontally in the
