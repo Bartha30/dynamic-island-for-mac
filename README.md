@@ -5,7 +5,7 @@ An iPhone-style Dynamic Island for your MacBook's notch. It shows what's playing
 ## Features
 
 - **Collapsed pill** around the notch with the album cover and a live "playing" indicator tinted to the cover's colour
-- **Click to expand** for a full player:
+- **Hover or click to expand** for a full player (rest the pointer on the pill and it opens; move away and it closes):
   - Large album artwork with a soft glow in its colour
   - Song, artist and album
   - Draggable progress bar: drag or click anywhere to jump in the song
@@ -57,6 +57,7 @@ If you clicked **Don't Allow**, the island shows a warning. Fix it in **System S
 
 | Action | What it does |
 | --- | --- |
+| Rest the pointer on the island | Expand (closes again when you move away) |
 | Click the island | Expand / collapse |
 | Click outside the island | Collapse |
 | Drag or click the progress bar | Jump to that point in the song |
@@ -73,6 +74,7 @@ If you clicked **Don't Allow**, the island shows a warning. Fix it in **System S
 
 Right-click the island › **Settings…** (or ⌘, while its menu is open):
 
+- **Expand on hover:** open the island by resting the pointer on it (on by default). Turn it off to open it only by clicking
 - **Show after idle:** Off, 1, 2, 5, 10, 15, 30, 45 minutes or 1 hour (default 5 minutes). Set it to Off if you only want to open the screen yourself, and the Mac's sleep behaviour is left completely alone
 - **Lyrics timing:** moves the lyrics earlier or later for every song, in case your Mac or speakers run differently (default +0.25 s)
 - **Launch at Login**
@@ -85,6 +87,10 @@ Spotify and Apple Music don't share their lyrics with other apps, so lyrics come
 - Coverage is best for popular English songs. When a song isn't there you'll see "No lyrics found"; when only untimed lyrics exist, they're shown without syncing
 - Lines are synced one at a time (not word by word)
 - Needs an internet connection. In some regions lrclib.net may need a VPN
+
+## Album covers
+
+Covers come from Spotify or Music directly. When the player won't provide one (for example, Apple Music songs streamed without being added to your library), the app looks the song up in Apple's public iTunes catalogue, sending only the **title and artist**, and uses that cover only if both match.
 
 ## Supported players
 
